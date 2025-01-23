@@ -1,0 +1,415 @@
+use leptos::logging;
+use leptos_meta::Link;
+use leptos::prelude::*;
+use base64::{engine::general_purpose, Engine as _};
+
+use crate::optimizer::*; // Your caching logic + image resource
+
+/// Defines how the image is sized relative to the parent container.
+/// Analogous to Next.js's layout modes.
+/// - `Fixed`: uses exact `width` and `height`.
+/// - `Intrinsic`: uses the given `width` and `height` but scales up if needed.
+/// - `Responsive`: uses `width: 100%` with correct aspect ratio (no explicit height).
+/// - `Fill`: absolutely positions the image to fill its container.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ImageLayout {
+    Fixed,
+    Intrinsic,
+    Responsive,
+    Fill,
+}
+
+/// Custom URL generator. If you want to override how the final image URL is built,
+/// you can provide a `loader` function that takes the raw `src`, `width`, `height`, and `quality`.
+pub type ImageLoader = dyn Fn(&str, u32, u32, u8) -> String;
+
+/// Renders an optimized static image with optional blur placeholder, preload, and flexible layout.
+///
+/// # Props
+/// - `src`: Image source, relative to root (for local files).
+///   Remote URLs are used as-is if they start with `http`.
+/// - `height`, `width`: Final pixel dimensions used for layout.
+/// - `quality`: Image compression quality (0–100). Defaults to 75.
+/// - `blur`: Whether to use a blur-up placeholder. Defaults to `true`.
+/// - `priority`: Preloads the image if `true`. Defaults to `false`.
+/// - `lazy`: If `true`, loads the image lazily. Defaults to `true`.
+/// - `unoptimized`: Disables local optimization/caching.
+///   Useful for dev or if you want to handle image optimization yourself.
+/// - `loader`: Custom function to generate the final image URL.
+/// - `layout`: Controls how the image is displayed (fixed, intrinsic, responsive, fill).
+/// - `blur_data_url`: Optional override for the placeholder. If omitted,
+///   we fall back to the caching system’s blur image (SVG).
+/// - `alt`, `class`: Standard HTML `<img>` attributes.
+#[component]
+pub fn Image(
+    /// The image source, relative to root or remote (http/https).
+    #[prop(into)]
+    src: String,
+
+    /// Final explicit image height (in px).
+    height: u32,
+
+    /// Final explicit image width (in px).
+    width: u32,
+
+    /// Image compression quality (0–100).
+    #[prop(default = 75_u8)]
+    quality: u8,
+
+    /// Use a blur placeholder before the real image loads.
+    #[prop(default = true)]
+    blur: bool,
+
+    /// Preload the image if `true`.
+    #[prop(default = false)]
+    priority: bool,
+
+    /// Lazy-load the final image if `true`.
+    #[prop(default = true)]
+    lazy: bool,
+
+    /// Disable local optimization. Returns a plain `<img>` with no caching logic.
+    #[prop(default = false)]
+    unoptimized: bool,
+
+    /// A function to build or override the final image URL.
+    /// If omitted, we’ll default to your caching logic.
+    #[prop(optional)]
+    loader: Option<Box<ImageLoader>>,
+
+    /// Choose how the image is sized (mirroring Next.js).
+    #[prop(default = ImageLayout::Fixed)]
+    layout: ImageLayout,
+
+    /// Custom base64 blur placeholder data, if you want to override.
+    /// e.g. `"data:image/png;base64,..."`
+    #[prop(optional)]
+    blur_data_url: Option<String>,
+
+    /// Image alt text.
+    #[prop(into, optional)]
+    alt: String,
+
+    /// Additional CSS classes for the image.
+    #[prop(into, optional)]
+    class: MaybeProp<String>,
+) -> impl IntoView {
+    let alt = StoredValue::new(alt);
+
+    // Handle remote images first. If `src` starts with http,
+    // we do not attempt local caching.
+    if src.starts_with("http") {
+        if unoptimized {
+            // Return plain <img> as-is.
+            let loading = if lazy { "lazy" } else { "eager" };
+            return view! {
+                <img
+                    src=src
+                    alt=alt.get_value()
+                    class=class.get()
+                    width=width
+                    height=height
+                    decoding="async"
+                    loading=loading
+                    // Layout styling
+                    style=layout_style(layout, width, height)
+                />
+            }
+                .into_any();
+        } else {
+            logging::debug_warn!("`Image`: remote images are unoptimized by default.");
+            let loading = if lazy { "lazy" } else { "eager" };
+            return view! {
+                <img
+                    src=src
+                    alt=alt.get_value()
+                    class=class.get()
+                    width=width
+                    height=height
+                    decoding="async"
+                    loading=loading
+                    style=layout_style(layout, width, height)
+                />
+            }
+                .into_any();
+        }
+    }
+
+    // If unoptimized, skip all caching. Just return a plain <img>.
+    if unoptimized {
+        let loading = if lazy { "lazy" } else { "eager" };
+        return view! {
+            <img
+                src=src
+                alt=alt.get_value()
+                class=class.get()
+                width=width
+                height=height
+                decoding="async"
+                loading=loading
+                style=layout_style(layout, width, height)
+            />
+        }
+            .into_any();
+    }
+
+    // ----------------------------------------------------------------
+    // Otherwise, use your caching/optimizer approach:
+    // ----------------------------------------------------------------
+
+    // We fetch the global image cache resource
+    let resource = crate::use_image_cache_resource();
+    let src = StoredValue::new(src);
+
+    // If user provided a custom loader, use it; else, build from your caching logic.
+    let final_url = move |w: u32, h: u32, q: u8| -> String {
+        if let Some(ref loader_fn) = loader {
+            // Use user’s loader to produce final
+            let src = src.with_value(|src|src.clone());
+            loader_fn(&src, w, h, q)
+        } else {
+            // Use built-in caching approach
+            let opt_image = CachedImage {
+                src: src.with_value(|src|src.clone()),
+                option: CachedImageOption::Resize(Resize {
+                    width: w,
+                    height: h,
+                    quality: q,
+                }),
+            };
+            let handler_path = resource
+                .get()
+                .map(|config| config.api_handler_path.clone())
+                .unwrap_or_else(|| "".to_string());
+
+            opt_image.get_url_encoded(&handler_path)
+        }
+    };
+
+    // Prepare a descriptor for the blur version, if desired
+    // (or if the user doesn’t override with a custom blur_data_url).
+    let blur_image = StoredValue::new(CachedImage {
+        src: src.with_value(|src|src.clone()),
+        option: CachedImageOption::Blur(Blur {
+            width: 20,
+            height: 20,
+            svg_width: 100,
+            svg_height: 100,
+            sigma: 15,
+        }),
+    });
+
+    // We store the final image URL for the standard (resized) variant.
+    let opt_url = StoredValue::new(final_url(width, height, quality));
+
+    view! {
+        // Provide a minimal fallback that reserves space (same width/height)
+        <Suspense fallback=move || view! {
+            // Fallback: blank space or spinner while loading
+            <div
+                style=move || format!(
+                    "display:inline-block;width:{}px;height:{}px;background-color:#f0f0f0;",
+                    width, height
+                )
+            />
+        }>
+            {
+                move || {
+                    resource.get().map(|config| {
+                        // If user provided a custom placeholder, skip the caching request.
+                        if blur && blur_data_url.is_some() {
+                            let svg = SvgImage::InMemory( blur_data_url.clone().unwrap() );
+                            view! {
+                                <CacheImage
+                                    svg=svg
+                                    opt_image=opt_url.with_value(|url| url.clone())
+                                    alt=alt.get_value()
+                                    class=class
+                                    priority=priority
+                                    lazy=lazy
+                                    width=width
+                                    height=height
+                                    layout=layout
+                                />
+                            }.into_any()
+                        } else if blur {
+                            // Try to fetch a cached placeholder
+                            let images = &config.cache;
+                            let handler_path = &config.api_handler_path;
+
+                            let placeholder_svg = images
+                                .iter()
+                                .find(|(c, _)| blur_image.with_value(|b| b == c))
+                                .map(|(_, svg_data)| svg_data.clone());
+
+                            let svg = if let Some(svg_data) = placeholder_svg {
+                                SvgImage::InMemory(svg_data)
+                            } else {
+                                // The blur version has not been cached yet; request it.
+                                SvgImage::Request(
+                                    blur_image.get_value().get_url_encoded(handler_path),
+                                )
+                            };
+
+                            view! {
+                                <CacheImage
+                                    svg=svg
+                                    opt_image=opt_url.with_value(|url| url.clone())
+                                    alt=alt.get_value()
+                                    class=class
+                                    priority=priority
+                                    lazy=lazy
+                                    width=width
+                                    height=height
+                                    layout=layout
+                                />
+                            }.into_any()
+                        } else {
+                            // No blur => standard <img> with known w/h
+                            let loading = if lazy { "lazy" } else { "eager" };
+                            view! {
+                                // Preload link if "priority" is enabled
+                                {if priority {
+                                    view! {
+                                        <Link rel="preload" as_="image" href=opt_url.with_value(|url| url.clone()) />
+                                    }.into_any()
+                                } else {
+                                    ().into_any()
+                                }}
+
+                                <img
+                                    src=opt_url.with_value(|url| url.clone())
+                                    alt=alt.get_value()
+                                    class=move || class.get()
+                                    width=width
+                                    height=height
+                                    decoding="async"
+                                    loading=loading
+                                    style=layout_style(layout, width, height)
+                                />
+                            }.into_any()
+                        }
+                    })
+                }
+            }
+        </Suspense>
+    }.into_any()
+}
+
+/// An enum for the blurred placeholder image state.
+/// - `InMemory`: we already have the base64 or data URI to show.
+/// - `Request`: we need to fetch from the local cache/optimizer.
+enum SvgImage {
+    InMemory(String),
+    Request(String),
+}
+
+/// Internal component that displays the blurred placeholder as the background
+/// of the `<img>` until the real image is displayed.
+#[component]
+fn CacheImage(
+    svg: SvgImage,
+    #[prop(into)]
+    opt_image: String,
+    #[prop(into, optional)]
+    alt: String,
+    #[prop(into, optional)]
+    class: MaybeProp<String>,
+    priority: bool,
+    lazy: bool,
+
+    // For final layout
+    width: u32,
+    height: u32,
+    layout: ImageLayout,
+) -> impl IntoView {
+    let background_image = match svg {
+        SvgImage::InMemory(data) => {
+            // If user gave us an outright data URI like "data:image/svg+xml;base64, ...",
+            // you can detect that and skip re-encoding.
+            // For now, we assume we must base64-encode the SVG string.
+            if data.starts_with("data:image") {
+                format!("url('{data}')")
+            } else {
+                let svg_encoded = general_purpose::STANDARD.encode(data.as_bytes());
+                format!("url('data:image/svg+xml;base64,{svg_encoded}')")
+            }
+        }
+        SvgImage::Request(svg_url) => format!("url('{svg_url}')"),
+    };
+
+    let style = format!(
+        "color: transparent;\
+         background-size: cover;\
+         background-position: 50% 50%;\
+         background-repeat: no-repeat;\
+         background-image: {background_image};"
+    );
+
+    let loading = if lazy { "lazy" } else { "eager" };
+
+    view! {
+        // Preload if priority is set
+        {if priority {
+            view! {
+                <Link rel="preload" as_="image" href=opt_image.clone() />
+            }.into_any()
+        } else {
+            ().into_any()
+        }}
+
+        // This <img> uses the blur placeholder as its background
+        <img
+            src=opt_image
+            alt=alt.clone()
+            class=move || class.get()
+            decoding="async"
+            loading=loading
+            width=width
+            height=height
+            style=format!("{}{}", style, layout_style(layout, width, height))
+        />
+    }
+}
+
+/// Convert the chosen `layout` into appropriate CSS rules.
+///
+/// - `Fixed` => explicit width/height
+/// - `Intrinsic` => max-width is the provided width, can scale up
+/// - `Responsive` => width: 100% plus auto height to maintain aspect ratio
+/// - `Fill` => position: absolute; top/right/bottom/left: 0
+fn layout_style(layout: ImageLayout, width: u32, height: u32) -> String {
+    match layout {
+        ImageLayout::Fixed => {
+            // Typically you’d do nothing special; the `width` and `height` attributes
+            // handle the dimension, and you might do `display: inline-block;`.
+            // If you want consistent block behavior, you could do that here.
+            "display:inline-block;".to_string()
+        }
+        ImageLayout::Intrinsic => {
+            // Let the image scale up as needed but preserve the ratio.
+            // We fix the dimension but allow it to grow:
+            // "max-width: 100%" and "height: auto" is a typical approach.
+            // We also ensure the element can’t exceed its natural size.
+            format!(
+                "display:block;max-width:{}px;height:auto;",
+                width
+            )
+        }
+        ImageLayout::Responsive => {
+            // Force the image to stretch to container width, keep ratio:
+            let ratio = height as f64 / width as f64 * 100.0;
+            // For “fully fluid,” we can do a container with a ratio wrapper.
+            // Or just “width: 100%, height: auto”:
+            format!(
+                "display:block;width:100%;height:auto;max-width:{}px;",
+                width
+            )
+        }
+        ImageLayout::Fill => {
+            // Absolutely fill the parent container. Typically you’d require
+            // the parent to have `position: relative` and a fixed height or ratio.
+            "position:absolute;top:0;left:0;right:0;bottom:0;width:100%;height:100%;object-fit:cover;".to_string()
+        }
+    }
+}
