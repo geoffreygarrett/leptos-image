@@ -22,24 +22,27 @@ use leptos::prelude::*;
 ///
 /// ```
 pub fn provide_image_context() {
-    let resource: Resource<ImageConfig> = Resource::new_blocking(
+    let resource: Resource<ImageConfig> = new_image_resource();
+    leptos::prelude::provide_context(resource);
+}
+
+pub fn new_image_resource() -> Resource<ImageConfig> {
+    Resource::new_blocking(
         || (),
         |_| async {
             log!("Calling");
             get_image_config()
                 .await
-                .expect("Failed to retrieve image cache")
+                .unwrap_or_default()
+                // .expect("Failed to retrieve image cache")
         },
-    );
-
-
-    leptos::prelude::provide_context(resource);
+    )
 }
 
 type ImageResource = Resource<ImageConfig>;
 
 #[doc(hidden)]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct ImageConfig {
     pub(crate) api_handler_path: String,
     pub(crate) cache: Vec<(CachedImage, String)>,
@@ -71,6 +74,8 @@ pub(crate) async fn get_image_config() -> Result<ImageConfig, ServerFnError> {
 
 #[cfg(feature = "ssr")]
 pub(crate) fn use_optimizer() -> Result<crate::ImageOptimizer, ServerFnError> {
+    //use axum::{extract::Query, http::Method};
+    //use leptos_axum::extract;
     tracing::debug!("Calling use_optimizer");
     use_context::<crate::ImageOptimizer>()
         .ok_or_else(|| ServerFnError::ServerError("Image Optimizer Missing.".into()))

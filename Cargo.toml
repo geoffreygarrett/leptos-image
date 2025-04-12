@@ -14,6 +14,7 @@ repository = "https://github.com/nicoburniske/leptos-image"
 leptos = { version = "0.7.4", default-features = false }
 leptos_router = { version = "0.7.4", default-features = false }
 leptos_meta = { version = "0.7.4", default-features = false }
+leptos_axum = { version = "0.7.4", default-features = false, optional = true }
 
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", optional = true, features = ["HtmlImageElement"]}
@@ -43,3 +44,19 @@ hydrate = [ "dep:web-sys","leptos/hydrate" ]
 
 [dev-dependencies]
 leptos_axum = "0.7.4"
+
+[patch.crates-io]
+leptos-node-ref = { git = "https://github.com/geoffreygarrett/leptos-utils", branch = "feature/any-node-ref" }
+leptos-typed-fallback-show = { git = "https://github.com/geoffreygarrett/leptos-utils", branch = "feature/typed-fallback-show" }
+radix-leptos-label = { git = "https://github.com/geoffreygarrett/radix", branch = "update/leptos-0.7-label" }
+radix-leptos-primitive = { git = "https://github.com/geoffreygarrett/radix", branch = "update/leptos-0.7-primitive" }
+radix-leptos-compose-refs = { git = "https://github.com/geoffreygarrett/radix", branch = "update/leptos-0.7-compose-refs" }
+radix-leptos-context = { git = "https://github.com/geoffreygarrett/radix", branch = "update/leptos-0.7-context" }
+radix-leptos-avatar = { git = "https://github.com/geoffreygarrett/radix", branch = "updates/leptos-0.7-avatar" }
+radix-leptos-separator = { git = "https://github.com/geoffreygarrett/radix", branch = "update/leptos-0.7-separator" }
+#radix-leptos-presence = { git = "https://github.com/geoffreygarrett/radix", branch = "update/leptos-0.7-presence" }
+#leptos-maybe-callback = { git = "https://github.com/geoffreygarrett/leptos-utils", branch = "feature/maybe-callback" }
+
+leptos-obfuscate = { git = "https://github.com/sebadob/leptos-obfuscate", branch = "main" }
+leptos_image = { git = "https://github.com/geoffreygarrett/leptos-image", branch = "main" }
+leptos-routable = { git = "https://github.com/geoffreygarrett/leptos-routable", branch = "main" }
