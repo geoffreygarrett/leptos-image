@@ -163,7 +163,7 @@ where
                                   }) => {
             // 1) Open & auto-orient
             let img = image::open(&source_path)?;
-            let img = crate::util::auto_orient_image(img, source_path.as_ref())?;
+            let img = crate::util::auto_orient_image::<P>(img, &source_path)?;
 
             // 2) Resize after orientation is correct
             let resized = img.resize(
@@ -203,7 +203,7 @@ where
 
     // 1) Open & auto-orient
     let img = image::open(&source_path)?;
-    let img = crate::util::auto_orient_image(img, source_path.as_ref())?;
+    let img = crate::util::auto_orient_image::<P>(img, &source_path)?;
 
     // 2) Resize small for the blur placeholder
     let Blur {
