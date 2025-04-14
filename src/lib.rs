@@ -106,6 +106,7 @@ mod optimizer;
 mod provider;
 #[cfg(feature = "ssr")]
 mod routes;
+mod util;
 
 pub use image::*;
 #[cfg(feature = "ssr")]

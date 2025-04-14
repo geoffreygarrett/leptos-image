@@ -155,38 +155,44 @@ fn create_optimized_image<P>(
 where
     P: AsRef<std::path::Path> + AsRef<std::ffi::OsStr>,
 {
-    use webp::*;
-
     match config {
         CachedImageOption::Resize(Resize {
-            width,
-            height,
-            quality,
-        }) => {
-            let img = image::open(source_path)?;
-            let new_img = img.resize(
+                                      width,
+                                      height,
+                                      quality,
+                                  }) => {
+            // 1) Open & auto-orient
+            let img = image::open(&source_path)?;
+            let img = crate::util::auto_orient_image(img, source_path.as_ref())?;
+
+            // 2) Resize after orientation is correct
+            let resized = img.resize(
                 width,
                 height,
-                // Cubic Filter.
                 image::imageops::FilterType::CatmullRom,
             );
-            // Create the WebP encoder for the above image
-            let encoder: Encoder = Encoder::from_image(&new_img).unwrap();
-            // Encode the image at a specified quality 0-100
-            let webp: WebPMemory = encoder.encode(quality as f32);
+
+            // 3) Encode to WebP
+            use webp::Encoder;
+            let encoder = Encoder::from_image(&resized).unwrap();
+            let webp = encoder.encode(quality as f32);
+
+            // 4) Write out
             create_nested_if_needed(&save_path)?;
-            std::fs::write(save_path, &*webp)?;
+            std::fs::write(&save_path, &*webp)?;
 
             Ok(())
         }
         CachedImageOption::Blur(blur) => {
+            // For the blur path, we do orientation inside `create_image_blur`
             let svg = create_image_blur(source_path, blur)?;
             create_nested_if_needed(&save_path)?;
-            std::fs::write(save_path, &*svg)?;
+            std::fs::write(&save_path, &*svg)?;
             Ok(())
         }
     }
 }
+
 
 #[cfg(feature = "ssr")]
 fn create_image_blur<P>(source_path: P, blur: Blur) -> Result<String, CreateImageError>
@@ -195,45 +201,46 @@ where
 {
     use webp::*;
 
-    let img = image::open(source_path).map_err(|e| CreateImageError::ImageError(e))?;
+    // 1) Open & auto-orient
+    let img = image::open(&source_path)?;
+    let img = crate::util::auto_orient_image(img, source_path.as_ref())?;
 
+    // 2) Resize small for the blur placeholder
     let Blur {
         width,
         height,
-        svg_height,
         svg_width,
+        svg_height,
         sigma,
     } = blur;
-
     let img = img.resize(width, height, image::imageops::FilterType::Nearest);
 
-    // Create the WebP encoder for the above image
-    let encoder: Encoder = Encoder::from_image(&img).unwrap();
-    // Encode the image at a specified quality 0-100
-    let webp: WebPMemory = encoder.encode(80.0);
+    // 3) Convert to WebP (then embed in an SVG filter)
+    let encoder = Encoder::from_image(&img).unwrap();
+    let webp = encoder.encode(80.0);
 
-    // Encode the image to base64
+    // 4) Base64-encode for data URI
     use base64::{engine::general_purpose, Engine as _};
     let encoded = general_purpose::STANDARD.encode(&*webp);
-
     let uri = format!("data:image/webp;base64,{}", encoded);
 
+    // 5) Build the final SVG filter
     let svg = format!(
-        r#"
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100%" height="100%" viewBox="0 0 {svg_width} {svg_height}" preserveAspectRatio="none">
-    <filter id="a" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB"> 
-        <feGaussianBlur stdDeviation="{sigma}" edgeMode="duplicate"/> 
-        <feComponentTransfer>
-            <feFuncA type="discrete" tableValues="1 1"/> 
-        </feComponentTransfer> 
-    </filter> 
-    <image filter="url(#a)" x="0" y="0" height="100%" width="100%" href="{uri}"/>
-</svg>
-"#,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+                 width="100%" height="100%" viewBox="0 0 {svg_width} {svg_height}" preserveAspectRatio="none">
+   <filter id="a" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+       <feGaussianBlur stdDeviation="{sigma}" edgeMode="duplicate"/>
+       <feComponentTransfer>
+           <feFuncA type="discrete" tableValues="1 1"/>
+       </feComponentTransfer>
+   </filter>
+   <image filter="url(#a)" x="0" y="0" height="100%" width="100%" href="{uri}"/>
+</svg>"#,
     );
 
     Ok(svg)
 }
+
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, Hash)]
 pub struct CachedImage {

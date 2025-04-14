@@ -5,6 +5,7 @@ use leptos::prelude::*;
 use leptos_meta::Link;
 use base64::{engine::general_purpose, Engine as _};
 
+
 /**
  * Renders an optimized static image with optional blur placeholder and preload.
  *
@@ -38,6 +39,8 @@ pub fn Image(
     /// Additional CSS classes for the image.
     #[prop(into, optional)]
     class: MaybeProp<String>,
+    #[prop(into, optional)]
+    fallback: Option<ViewFn>,
 ) -> impl IntoView {
     // If remote (http/https), skip optimization and just return a plain <img>.
     if src.starts_with("http") {
@@ -83,14 +86,38 @@ pub fn Image(
     let alt = StoredValue::new(alt);
 
     return view! {
-        <Suspense fallback=move || {
-            view! {
-                // If you prefer, you could do a placeholder gray box, spinner, etc.
-                <div style=move || {
-                    format!("width: {}px; height: {}px; background-color: #f0f0f0;", width, height)
-                } />
-            }
-        }>
+        <Suspense fallback={move ||
+            {match fallback {
+                Some(fallback) => {
+                    // If a fallback is provided, use it
+                    view! {
+                        <div style=move || {
+                            format!("width: {}px; height: {}px;", width, height)
+                        }>
+                            {fallback.run()}
+                        </div>
+                    }.into_any()
+                }
+                None => {
+                    // Otherwise, show a placeholder
+                    view! {
+                        // This is a placeholder gray box
+                        // We use the width/height to reserve the space
+                        // until the image loads.
+                        // This prevents layout shift.
+                        <div style=move || {
+                            format!("width: {}px; height: {}px; background-color: #f0f0f0;", width, height)
+                        } />
+                    }.into_any()
+                }
+            }}}
+            // view! {
+            //     // If you prefer, you could do a placeholder gray box, spinner, etc.
+            //     <div style=move || {
+            //         format!("width: {}px; height: {}px; background-color: #f0f0f0;", width, height)
+            //     } />
+            // }
+        >
             // Once the resource is ready, we show the real or blurred image
             {move || {
                 resource
