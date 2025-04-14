@@ -10,15 +10,10 @@ pub fn auto_orient_image(
     // Attempt to read EXIF data via rexif
     match rexif::parse_file(source_path) {
         Ok(parsed) => {
-            println!("Parsed EXIF data: {:#?}", parsed);
-
             // We’ll keep track of the *last* orientation we find
             let mut orientation_code: Option<u16> = None;
 
             for entry in parsed.entries {
-                // Print debug info
-                println!("Entry: {:?}", entry);
-
                 // Check numeric tag 0x0112 (Orientation)
                 if entry.ifd.tag == 0x0112 {
                     if let rexif::TagValue::U16(vals) = entry.value {
