@@ -1,50 +1,59 @@
 use leptos::logging;
-use crate::optimizer::*;
-
 use leptos::prelude::*;
 use leptos_meta::Link;
 use base64::{engine::general_purpose, Engine as _};
 
+// Make sure to import your updated ImageOptimizer structs/types from wherever they live:
+use crate::optimizer::{ImageOptimizer, CachedImage, CachedImageOption, Blur, Resize};
 
 /**
- * Renders an optimized static image with optional blur placeholder and preload.
+ * Renders an optimized static image with an optional blur placeholder and preload.
  *
- * The width/height properties ensure the layout space is reserved from the start,
- * preventing content shift when the image or placeholder loads.
+ * The width/height props reserve layout space, preventing shift when the image or placeholder loads.
  */
 #[component]
 pub fn Image(
-    /// Image source. Should be path relative to root.
+    /// Image source. Path relative to the public root (unless it's an external URL).
     #[prop(into)]
     src: String,
-    /// Resize image height (final image), maintains aspect ratio relative to `width`.
-    height: u32,
-    /// Resize image width (final image), maintains aspect ratio relative to `height`.
+
+    /// Final image width in pixels.
     width: u32,
-    /// Image quality (0-100).
+
+    /// Final image height in pixels.
+    height: u32,
+
+    /// Image quality (0-100) for the resized WebP.
     #[prop(default = 75_u8)]
     quality: u8,
+
     /// Whether to add a blur placeholder before the real image loads.
     #[prop(default = true)]
     blur: bool,
-    /// Whether to add a preload <link> for this image.
+
+    /// Whether to add a `<link rel="preload" ...>` for this image.
     #[prop(default = false)]
     priority: bool,
-    /// Lazy-load the final image.
+
+    /// If `true`, use `loading="lazy"` for the final `<img>`.
     #[prop(default = true)]
     lazy: bool,
-    /// Image alt text.
+
+    /// The `<img>` alt text.
     #[prop(into, optional)]
     alt: String,
-    /// Additional CSS classes for the image.
+
+    /// Additional CSS classes for the `<img>`.
     #[prop(into, optional)]
     class: MaybeProp<String>,
+
+    /// An optional fallback view while loading (inside `<Suspense>`).
     #[prop(into, optional)]
     fallback: Option<ViewFn>,
 ) -> impl IntoView {
-    // If remote (http/https), skip optimization and just return a plain <img>.
+    // If the user gave an external URL, skip optimization:
     if src.starts_with("http") {
-        logging::debug_warn!("Image component only supports static images.");
+        logging::debug_warn!("Image component only supports static images for SSR optimization.");
         let loading = if lazy { "lazy" } else { "eager" };
         return view! {
             <img
@@ -56,11 +65,10 @@ pub fn Image(
                 decoding="async"
                 loading=loading
             />
-        }
-            .into_any();
+        }.into_any();
     }
 
-    // Prepare the cache descriptors for blur version and optimized version
+    // Create descriptors for blur & optimized variants.
     let blur_image = StoredValue::new(CachedImage {
         src: src.clone(),
         option: CachedImageOption::Blur(Blur {
@@ -81,97 +89,78 @@ pub fn Image(
         }),
     });
 
-    // We fetch the global image cache resource
-    let resource = crate::use_image_cache_resource();
-    let alt = StoredValue::new(alt);
+    // We'll get the global optimizer (or however your code obtains it).
+    // For example, you might have a resource or a context accessor:
+    let optimizer_resource = crate::use_image_cache_resource();
 
-    return view! {
-        <Suspense fallback={move ||
-            {match fallback {
-                Some(fallback) => {
-                    // If a fallback is provided, use it
-                    view! {
-                        <div style=move || {
-                            format!("width: {}px; height: {}px;", width, height)
-                        }>
-                            {fallback.run()}
-                        </div>
-                    }.into_any()
-                }
-                None => {
-                    // Otherwise, show a placeholder
-                    view! {
-                        // This is a placeholder gray box
-                        // We use the width/height to reserve the space
-                        // until the image loads.
-                        // This prevents layout shift.
-                        <div style=move || {
-                            format!("width: {}px; height: {}px; background-color: #f0f0f0;", width, height)
-                        } />
-                    }.into_any()
-                }
-            }}}
-            // view! {
-            //     // If you prefer, you could do a placeholder gray box, spinner, etc.
-            //     <div style=move || {
-            //         format!("width: {}px; height: {}px; background-color: #f0f0f0;", width, height)
-            //     } />
-            // }
-        >
-            // Once the resource is ready, we show the real or blurred image
+    let alt_stored = StoredValue::new(alt);
+
+    // Build a fallback <div> to reserve space if none is provided.
+    let fallback_view = move || {
+        match fallback {
+            Some(ref fallback_fn) => view! {
+                <div style=move || format!("width: {width}px; height: {height}px;")>
+                    {fallback_fn.run()}
+                </div>
+            }.into_any(),
+            None => view! {
+                <div style=move || {
+                    format!("width: {width}px; height: {height}px; background-color: #f0f0f0;")
+                } />
+            }.into_any(),
+        }
+    };
+
+    view! {
+        <Suspense fallback=fallback_view>
+            // Once our resource is ready, we either render a blurred placeholder or just the final <img>.
             {move || {
-                resource
+                optimizer_resource
                     .get()
-                    .map(|config| {
-                        let images = &config.cache;
-                        let handler_path = &config.api_handler_path;
-                        let opt_image_url = opt_image.get_value().get_url_encoded(handler_path);
-                        if blur {
-                            let placeholder_svg = images
-                                .iter()
-                                .find(|(c, _)| blur_image.with_value(|b| b == c))
-                                .map(|(_, svg_data)| svg_data.clone());
-                            let svg = if let Some(svg_data) = placeholder_svg {
-                                SvgImage::InMemory(svg_data)
-                            } else {
-                                SvgImage::Request(
-                                    blur_image.get_value().get_url_encoded(handler_path),
-                                )
-                            };
-                            return view! {
-                                // Try to fetch an existing cached placeholder
+                    .map(|optimizer| {
+                        // We construct a final .webp route from the CachedImage -> `get_url_encoded(...)`
+                        let opt_url = opt_image.get_value().get_url_encoded(&optimizer.api_handler_path);
 
+                        if blur {
+                            // Ask the optimizer if it has a blur SVG in memory:
+                            let maybe_svg = optimizer.get_blur(&blur_image.get_value());
+                            let svg_image = match maybe_svg {
+                                Some(svg_data) => SvgImage::InMemory(svg_data),
+                                None => {
+                                    // Fallback: request from the server route.
+                                    let placeholder_url = blur_image.get_value()
+                                        .get_url_encoded(&optimizer.api_handler_path);
+                                    SvgImage::Request(placeholder_url)
+                                }
+                            };
+
+                            view! {
                                 <CacheImage
-                                    svg=svg
-                                    opt_image=opt_image_url
-                                    alt=alt.get_value()
+                                    svg=svg_image
+                                    opt_image=opt_url
+                                    alt=alt_stored.get_value()
                                     class=class
                                     priority=priority
                                     lazy=lazy
                                     width=width
                                     height=height
                                 />
-                            }
-                                .into_any();
+                            }.into_any()
+
                         } else {
+                            // No blur => just show the final <img>.
                             let loading = if lazy { "lazy" } else { "eager" };
-                            return view! {
-                                // Try to fetch an existing cached placeholder
-
-                                // Try to fetch an existing cached placeholder
-
-                                // No blur => standard <img> with known w/h
+                            view! {
                                 <img
-                                    src=opt_image_url
-                                    alt=alt.get_value()
+                                    src=opt_url
+                                    alt=alt_stored.get_value()
                                     class=move || class.get()
                                     width=width
                                     height=height
                                     decoding="async"
                                     loading=loading
                                 />
-                            }
-                                .into_any();
+                            }.into_any()
                         }
                     })
             }}
@@ -179,13 +168,15 @@ pub fn Image(
     }.into_any()
 }
 
+/// Used internally for the blurred placeholder logic.
 enum SvgImage {
+    /// We already have an in‐memory SVG string.
     InMemory(String),
+    /// We’ll request it from `/{handler_path}?...`.
     Request(String),
 }
 
-/// Internal component that displays the blurred placeholder (SVG)
-/// in the background of the <img> until the real image is displayed.
+/// Internal subcomponent that shows an `<img>` with a blurred background (SVG).
 #[component]
 fn CacheImage(
     svg: SvgImage,
@@ -197,19 +188,23 @@ fn CacheImage(
     class: MaybeProp<String>,
     priority: bool,
     lazy: bool,
-    // Passed down to maintain the final layout from the start
     width: u32,
     height: u32,
 ) -> impl IntoView {
-    // Construct background SVG or request URL
     let background_image = match svg {
         SvgImage::InMemory(svg_data) => {
-            let svg_encoded = general_purpose::STANDARD.encode(svg_data.as_bytes());
-            format!("url('data:image/svg+xml;base64,{svg_encoded}')")
+            // Convert the raw SVG text into a data: URL so it can be used as CSS background-image.
+            let encoded = general_purpose::STANDARD.encode(svg_data.as_bytes());
+            format!("url('data:image/svg+xml;base64,{encoded}')")
         }
-        SvgImage::Request(svg_url) => format!("url('{svg_url}')"),
+        SvgImage::Request(url) => {
+            // We'll let the client request the `.svg` from the server route.
+            format!("url('{url}')")
+        }
     };
 
+    // We apply the blur as a background while the final <img> is loading.
+    // This ensures a low-res preview behind it.
     let style = format!(
         "color: transparent;\
          background-size: cover;\
@@ -221,13 +216,15 @@ fn CacheImage(
     let loading = if lazy { "lazy" } else { "eager" };
 
     view! {
-        {if priority {
-            view! { <Link rel="preload" as_="image" href=opt_image.clone() /> }.into_any()
+        // If priority is true, add a preload hint for the final image.
+        {move || if priority {
+            view! {
+                <Link rel="preload" as_="image" href=opt_image.clone() />
+            }.into_any()
         } else {
             ().into_any()
         }}
 
-        // Reserve the space with width/height, apply the blur background
         <img
             src=opt_image
             alt=alt.clone()

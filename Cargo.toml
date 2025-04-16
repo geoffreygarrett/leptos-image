@@ -33,6 +33,8 @@ base64 = "0.21"
 tracing = { version = "0.1", optional = true }
 dashmap = { version = "5", optional = true }
 rexif = { version = "0.7.5", optional = true }
+chrono = "0.4.40"
+tokio-stream = "0.1.17"
 
 [features]
 ssr = [ 

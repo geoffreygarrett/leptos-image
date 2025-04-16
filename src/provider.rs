@@ -1,5 +1,5 @@
 use leptos::logging::log;
-use crate::optimizer::CachedImage;
+use crate::optimizer::{BlurEntry, CachedImage};
 use leptos::prelude::*;
 
 /// Provides Image Cache Context so that Images can use their blur placeholders if they exist.
@@ -45,7 +45,7 @@ type ImageResource = Resource<ImageConfig>;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct ImageConfig {
     pub(crate) api_handler_path: String,
-    pub(crate) cache: Vec<(CachedImage, String)>,
+    pub(crate) cache: Vec<(CachedImage, BlurEntry)>,
 }
 
 pub(crate) fn use_image_cache_resource() -> Resource<ImageConfig> {
@@ -59,7 +59,7 @@ pub(crate) async fn get_image_config() -> Result<ImageConfig, ServerFnError> {
     tracing::info!("2");
 
     let cache = optimizer
-        .cache
+        .blur_cache
         .iter()
         .map(|entry| (entry.key().clone(), entry.value().clone()))
         .collect();
